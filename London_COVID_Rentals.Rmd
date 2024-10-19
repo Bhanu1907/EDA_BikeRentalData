@@ -1,0 +1,305 @@
+---
+title: 'Analysing London COVID Bike Rentals Data'
+author: "Bhanu Pratap Singh"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 3
+---
+
+```{r setup, message=FALSE, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(emmeans)
+library(gridExtra)
+library(Hmisc)
+library(car)
+library(corrplot)
+options(width=100)
+```
+
+### **Data Dictionary**
+
+The variables in the provided dataset are described in the table below
+
+Variable | Description
+------------- | -------------
+date | Dates on which corresponding number of bikes were hired
+Hires | Number of bikes hired on a given date
+schools_closed | Indicates whether the policy of 'schools closed' was imposed on the given date (1 for imposed, 0 for not imposed)
+pubs_closed | Indicates whether the policy of 'pubs_closed' was imposed on the given date (1 for imposed, 0 for not imposed)
+shops_closed | Indicates whether the policy of 'shops_closed' was imposed on the given date (1 for imposed, 0 for not imposed)
+eating_places_closed | Indicates whether the policy of 'eating_places_closed' was imposed on the given date (1 for imposed, 0 for not imposed)
+stay_at_home | Indicates whether the policy of 'stay_at_home' was imposed on the given date (1 for imposed, 0 for not imposed)
+household_mixing_indoors_banned | Indicates whether the policy of 'household_mixing_indoors_banned' was imposed on the given date (1 for imposed, 0 for not imposed)
+wfh | Indicates whether the policy of 'wfh' was imposed on the given date (1 for imposed, 0 for not imposed)
+curfew | Indicates whether the policy of 'curfew' was imposed on the given date (1 for imposed, 0 for not imposed)
+eat_out_to_help_out | Indicates whether the policy of 'eat_out_to_help_out' was imposed on the given date (1 for imposed, 0 for not imposed)
+day | Day of the week on the given date
+month | Month on the given date
+year | Year on the given date
+
+---
+
+### **Data Import and Preparation**
+
+#### **Import and check the data**
+```{r, warning=FALSE}
+# Import the .csv datafile as 'bikehires_data'
+bikehires_data <- read.csv("London_COVID_bikes.csv", stringsAsFactors = TRUE)
+
+# Summary of the 'bikehires_data' dataset
+summary(bikehires_data)
+str(bikehires_data)
+```
+
+#### **Check data integrity**
+```{r, warning=FALSE}
+# Checking for missing values or 'NAs'
+sum(is.na(bikehires_data))
+```
+
+There are no missing values. Now we will check the data for duplicate values.
+
+```{r, warning=FALSE}
+# Checking for duplicate values in our data.
+sum(duplicated(bikehires_data))
+```
+
+There are no duplicate values either.
+
+#### **Plotting the data and removing the outliers**
+```{r, warning=FALSE}
+# Making boxplot to identify potential outliers
+ggplot(bikehires_data) + geom_boxplot(aes(x= factor(bikehires_data$year), y= bikehires_data$Hires)) + labs(x= "Years", y="No. of bike hires", title = "Distribution of number of bike hires by Years") + theme(plot.title = element_text(size = 12, face = "bold", hjust = 0.5))
+```
+
+```{r, warning=FALSE}
+# Filtering out the potential outliers
+bikehires_data_wo_outliers <- bikehires_data %>% group_by(year) %>% filter(Hires <= (mean(Hires)+2*sd(Hires)) & Hires >= (mean(Hires)-2*sd(Hires)))
+```
+
+From here onwards we will be using 'bikehires_data_wo_outliers' for further analyses. Below is the new plot of data.
+```{r, warning=FALSE}
+ggplot(bikehires_data_wo_outliers) + geom_boxplot(aes(x= factor(bikehires_data_wo_outliers$year), y= bikehires_data_wo_outliers$Hires)) + labs(x= "Years", y="No. of bike hires", title = "Distribution of number of bike hires by Years") + theme(plot.title = element_text(size = 12, face = "bold", hjust = 0.5))
+```
+
+#### **Creating custom labels for months and days of the week, to ensure months and days are in correct order**
+```{r, warning=FALSE}
+# Custom labels for months
+custom_month_labels <- c("Jan","Feb","Mar","Apr", "May", "Jun","Jul", "Aug","Sep","Oct","Nov","Dec")
+  bikehires_data_wo_outliers$month <- factor(bikehires_data_wo_outliers$month, levels = custom_month_labels)
+
+# Custom labels for days of the week
+custom_list <- c("Sun","Mon","Tue","Wed","Thu","Fri","Sat") 
+  bikehires_data_wo_outliers$day <- factor(bikehires_data_wo_outliers$day, levels = custom_list)
+
+# Checking the summary and structure of the updated dataset
+summary(bikehires_data_wo_outliers)
+str(bikehires_data_wo_outliers)
+```
+
+### **Plotting the data**
+
+#### **Plotting line graph to see trends in the data**
+```{r, warning=FALSE}
+# Creating summary tibble for our dataset
+bikehires_summary <- bikehires_data_wo_outliers %>% group_by(month, year) %>% summarise(mean_hires = mean(Hires))
+
+# Plotting the line graph
+ggplot(bikehires_summary)+geom_line(aes(x=month,y=mean_hires,group=factor(year),color=factor(year))) + labs(x= "Months", y="Mean bike hires", title = "Bike hires by Months for each Years", color = "Years") + theme(plot.title = element_text(size = 12, face = "bold", hjust = 0.5))
+```
+
+From this plot we have 2 observations:
+
+(i) 2010 is an outlier year as the number of bike hires is very low across months
+
+(ii) Bike hires are across years peak during the summers and dip to the lowest during winter months from November to February
+
+### **Analyses**
+
+#### **Compare hires pre and during COVID using emmeans and contrast**
+```{r, warning=FALSE}
+#Creating a variable to flag whether a record is Pre-COVID or during COVID
+bikehires_data_wo_outliers <- bikehires_data_wo_outliers %>% mutate(COVID_Flag=ifelse(year<"2020", "Pre-COVID", "COVID"))
+```
+
+```{r, warning=FALSE}
+# Creating custom labels to ensure correct order of Pre-COVID and COVID numbers on the graph
+custom_period_labels <- c("Pre-COVID","COVID")
+  bikehires_data_wo_outliers$COVID_Flag <- factor(bikehires_data_wo_outliers$COVID_Flag, levels = custom_period_labels)
+
+# Using 'lm' and 'emmeans' function to get confidence intervals and 'confint' to get contrast in bike hires across COVID and pre-COVID years
+m.hires.by.period <- lm(Hires~COVID_Flag, data=bikehires_data_wo_outliers)
+(  m.hires.by.period.emm <- emmeans(m.hires.by.period, ~COVID_Flag)  )
+(  m.hires.by.period.contrast <- confint(pairs(m.hires.by.period.emm))  )
+
+# Plotting side by side the average number of bike hires and difference in average number of bike hires
+grid.arrange(
+    ggplot(summary(m.hires.by.period.emm), aes(x=COVID_Flag, y=emmean, ymin=lower.CL, ymax=upper.CL)) + 
+        geom_point() + geom_linerange() + 
+        labs(y="Average number of bike hires", x="Years", subtitle="Error bars are 95% CIs", title="Bike Hires") + ylim(25000,30000), 
+    ggplot(m.hires.by.period.contrast, aes(x=contrast, y=-estimate, ymin=-lower.CL, ymax=-upper.CL)) + 
+        geom_point() + geom_linerange() + 
+        labs(y="Difference in Average number of bike hires", x="Contrast", subtitle="Error bars are 95% CIs", title="Difference in Bike Hires") +
+      scale_x_discrete(labels = c("COVID - (Pre-COVID)")) + ylim(1500,4000),
+    ncol=2
+)
+```
+
+The mean bike hires in pre-COVID years is 26178, 95% CI [25875-26481]. The mean bike hires in COVID years is 28839, 95% CI [28351-29310]. The mean bikes is 2652, 95% CI [2085-3220] more in COVID years as compared to Pre-COVID years.
+
+The above observation seems a bit weird, as ideally bike hires should have decreased during COVID due to COVID restrictions. However, the above trend might be due to very low bike hires in the initial years in our raw data. Therefore, let's check above trends with a focus on years around COVID, i.e., 2017 to 2023.
+
+#### **Filtering out bike hires data for 2017 to 2023**
+```{r, warning=FALSE}
+# Creating a new dataset focused on year 2017 to 2023
+bikehires_2017_beyond <- bikehires_data_wo_outliers %>% filter(year>="2017")
+
+# Plotting the line graph for the smaller dataset
+bikehires_2017beyond_summary <- bikehires_2017_beyond %>% group_by(month, year) %>% summarise(mean = mean(Hires))
+ggplot(bikehires_2017beyond_summary)+geom_line(aes(x=month,y=mean,group=factor(year),color=factor(year))) + labs(x= "Months", y="Mean bike hires", title = "Bike hires by Months for each Years (2017 to 2023)", color = "Years") + theme(plot.title = element_text(size = 12, face = "bold", hjust = 0.5))
+```
+
+Here we can notice a few interesting trend-breaks:
+
+In 2020:
+
+(i)   Bike hires dropped in March, while based on past trends it was supposed to go up. This happened because COVID restrictions were enforced starting March'2020
+
+(ii)  We can see a sharp increase from April to May, as 'Stay at home' restriction got lifted. Bike hires increased linearly till July as slowly all the restrictions were getting removed except for wfh
+
+(iii) Number of bike hires platued July to September, post that there was a sharp drop as wfh and COVID restrictions got implemented again
+
+2022 and beyond:
+
+(i)  Most of the COVID restrictions were relaxed in 2022 and beyond except for wfh
+
+(ii) Bike hires were very low in 2023 as compared to other years during the summer months, maybe due to unavailability of complete data
+
+#### **Dividing the data into COVID (2020 and beyond) and pre-COVID years (before 2020)**
+```{r, warning=FALSE}
+bikehires_preCOVID <- bikehires_2017_beyond %>% filter(year<"2020", year>="2017")
+bikehires_COVID <- bikehires_2017_beyond %>% filter(year>="2020")
+```
+
+```{r,warning=FALSE}
+# Comparing Pre-COVID and COVID bike hires using a welch two sample t-test
+t.test(bikehires_preCOVID$Hires, bikehires_COVID$Hires)
+```
+
+The mean bike hires in Pre-COVID years (i.e., 2017 to 2019) is 29466. The mean bike hires in COVID years (i.e., 2020 to 2023) is 28830. The mean bike hires is significantly higher in Pre-COVID years, Welch t(2356) = 1.76, p = 0.08, with a difference of 636.
+
+Above t-test shows, that our earlier hypothesis was correct, that Pre-COVID bike hires were less because of initial years.
+
+### **Correlation**
+
+#### **Running correlation on the COVID years data**
+```{r, warning=FALSE}
+# Creating the correlation matrix
+cor_matrix <- rcorr(as.matrix(select_if(bikehires_COVID, is.numeric)))
+cor_matrix
+```
+
+```{r, warning=FALSE}
+# Plotting the correlations
+corrplot(cor_matrix$r, method = "color", type = "upper", tl.col = "black", tl.srt = 45, col = colorRampPalette(c("red", "yellow", "green"))(100), main = "Correlation Matrix", 
+mar = c(1, 1, 1, 1),tl.cex = 0.8 )
+```
+
+We can clearly see that:
+
+(i)  'schools_closed', 'pubs_closed', 'shops_closed', 'eating_places_closed', 'stay_at_home' and 'household_mixing_indoors_banned' have high correlation with each other
+
+(ii) 'rule_of_6_indoors' and 'eat_out_to_help_out' have a decent positive correlation with 'Hires', while 'wfh' has a negative correlation of a similar magnitude
+
+### **Modelling**
+
+#### **Effect of 'wfh', 'rule_of_6_indoors' and 'eat_out_to_help_out' on 'Hires'**
+
+Creating a linear model on pre-COVID data using years, months and days data, since there are no COVID restrictions during that time period.
+```{r, warning=FALSE}
+# Creating the linear model
+m.precovid <- lm(Hires ~ factor(year) + month + day, bikehires_preCOVID)
+
+# Creating another model by taking interactions
+m.precovid.interactions <- lm(Hires ~ factor(year)*month*day, bikehires_preCOVID)
+
+# Comparing models for better fit
+anova(m.precovid,m.precovid.interactions)
+```
+
+Anova shows that even upon including interaction terms, model fit is not significantly improved (F(232,801)=1.12, p=0.127).
+
+```{r, warning=FALSE}
+# Creating the linear model
+m.covid <- lm(Hires ~ factor(year) + month + day + wfh + rule_of_6_indoors + eat_out_to_help_out, bikehires_COVID)
+
+# Creating another model by taking interactions
+m.covid.interactions <- lm(Hires ~ factor(year)*month*day*wfh*rule_of_6_indoors*eat_out_to_help_out, bikehires_COVID)
+
+# Comparing models for better fit
+anova(m.covid,m.covid.interactions)
+```
+
+Anova shows that upon including the interaction terms, linear model overall fit becomes significantly improved (F(342,953)=2.80, p <.001). Therefore we can say that 'wfh', 'rule of 6 indoors' and 'eat out to help out' do have an effect on the bike hires.
+
+Now, lets check the nature of this impact.
+```{r, warning=FALSE}
+# Creating a lm model for 'wfh', 'rule of 6 indoors' and 'eat out to help out'. Let's refer to this as 'base model'.
+m.hires.by.covidelements <- lm(Hires ~ wfh + rule_of_6_indoors + eat_out_to_help_out, bikehires_COVID)
+
+# Print summary of the model
+summary(m.hires.by.covidelements)
+```
+
+```{r, warning=FALSE}
+confint(m.hires.by.covidelements)
+```
+
+Multiple regression shows that there is a significant negative effect of wfh upon Hires (t(1315) = -6.39, p <.001), with every 1 point increase in wfh predicting an average decrease of 4136 on the number of Hires (95% CI = [-5405.02,-2865.94]); a significant positive effect of 'rule of 6 indoors' (t(1315) = 7.07, p <.001), with every 1 point increase in 'rule of 6 indoors' predicting an average increase of 7027 on the number of Hires (95% CI = [5075.95,8977.75]); and a significant positive effect of 'eat out to help out' (t(1315) = 2.70, p =.007), with every 1 point increase in 'eat out to help out' predicting a average increase of 4904 on the number of Hires (95% CI = [1337,8470]).
+
+#### **Control for Days, Months and Years**
+```{r, warning=FALSE}
+# (i)   Control for days
+m.hires.by.covidelements.and.days <- lm(Hires ~ wfh + rule_of_6_indoors + eat_out_to_help_out + day, bikehires_COVID)
+# (ii)  Control for months
+m.hires.by.covidelements.and.months <- lm(Hires ~ wfh + rule_of_6_indoors + eat_out_to_help_out + month, bikehires_COVID)
+# (iii) Control for years
+m.hires.by.covidelements.and.years <- lm(Hires ~ wfh + rule_of_6_indoors + eat_out_to_help_out + factor(year), bikehires_COVID)
+```
+
+Comparing the models with 'base model'.
+```{r, warning=FALSE}
+# Comparing 'base model' with control for days
+anova(m.hires.by.covidelements,m.hires.by.covidelements.and.days)
+```
+
+When we control our base model for 'day', Anova shows that model fit is significantly improved (F(6,1309)=3.74, p=.001). Therefore, it is appropriate to control for effects of potential differences between different days of the week.
+
+```{r, warning=FALSE}
+# Comparing 'base model' with control for months
+anova(m.hires.by.covidelements,m.hires.by.covidelements.and.months)
+```
+
+When we control our base model for 'month', Anova shows that model fit is significantly improved (F(11,1304)=64.30, p<.001). Therefore, it is appropriate to control for effects of potential differences between different months.
+
+```{r, warning=FALSE}
+# Comparing 'base model' with control for years
+anova(m.hires.by.covidelements,m.hires.by.covidelements.and.years)
+```
+
+When we control our base model for 'month', Anova shows that model fit is significantly improved (F(11,1304)=64.30, p<.001). Therefore, it is appropriate to control for effects of potential differences between different years.
+
+### **Conclusions**
+
+A few observations from above analyses:
+
+* *Bike hires* across years (irrespective for COVID) see a **dip during the winter months** from November to February
+
+* t-test on pre-COVID and COVID data, confirms that **bike hires dropped during COVID** as compared to pre-COVID standards
+
+* Multiple regression shows that *wfh* has **significant negative** effect on bike hires, while *rule of 6 indoors* and *eat out to help out* have **significant positive** impact on bike hires
+
+* Regression and Anova show us that it is appropriate to *control for the effects of potential differences between different years, months, and days of the week*
